@@ -4,9 +4,12 @@ extern crate serde;
 use std::env;
 use serde::{Serialize, Deserialize};
 use quick_xml::de::{from_reader};
-use quick_xml::Reader;
+use quick_xml::{Reader};
 use std::process::exit;
-use std::io::{BufRead};
+use std::io::{BufRead, BufReader, Cursor};
+use std::convert::Infallible;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Request, Response, Server, Body, Method, StatusCode};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 struct Section {
@@ -23,7 +26,7 @@ struct Title {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
-struct Body {
+struct FB2Body {
     title: Option<Title>,
     section: Option<Vec<Section>>,
 }
@@ -160,22 +163,46 @@ struct Description {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 struct FictionBook {
     description: Description,
-    body: Body,
+    body: FB2Body,
 }
 
-fn reader_to_json<R: BufRead>(reader: R) -> String {
+fn reader_to_json<R: BufRead>(reader: R) -> serde_json::Result<String> {
     let fb2: FictionBook = match from_reader(reader) {
         Ok(f) => f,
-        Err(e) => panic!(e.to_string()),
+        Err(e) => return Ok(String::from(format!("{{\"error\": \"{}\"}}", e.to_string())))
     };
 
-    match serde_json::to_string(&fb2) {
-        Ok(j) => j,
-        Err(e) => panic!(e.to_string()),
+    serde_json::to_string(&fb2)
+}
+
+async fn process(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    match (req.method(), req.uri().path()) {
+        (&Method::POST, "/parse") => {
+            let full_body = hyper::body::to_bytes(req.into_body()).await?;
+            let reader = Reader::from_reader(
+                BufReader::new(Cursor::new(full_body.to_vec()))
+            );
+            Ok(Response::new(Body::from(
+                match reader_to_json(reader.into_underlying_reader()) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let mut server_error = Response::default();
+                        *server_error.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                        return Ok(server_error)
+                    }
+                }
+            )))
+        },
+        _ => {
+            let mut not_found = Response::default();
+            *not_found.status_mut() = StatusCode::NOT_FOUND;
+            Ok(not_found)
+        }
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() == 1 {
@@ -196,7 +223,24 @@ fn main() {
             Err(e) => panic!(e.to_string()),
         };
 
-        println!("{}", reader_to_json(reader.into_underlying_reader()));
-        exit(0);
+        println!("{}", reader_to_json(reader.into_underlying_reader())?);
     }
+
+    if mode == "server" {
+        pretty_env_logger::init();
+
+        let make_svc = make_service_fn(|_conn| {
+            async { Ok::<_, Infallible>(service_fn(process)) }
+        });
+
+        let addr = ([127, 0, 0, 1], 3000).into();
+
+        let server = Server::bind(&addr).serve(make_svc);
+
+        println!("Listening on http://{}", addr);
+
+        server.await?;
+    }
+
+    Ok(())
 }
