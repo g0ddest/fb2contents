@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader, Cursor};
 use std::convert::Infallible;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Request, Response, Server, Body, Method, StatusCode};
+use serde::de::Error;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 struct Section {
@@ -169,7 +170,9 @@ struct FictionBook {
 fn reader_to_json<R: BufRead>(reader: R) -> serde_json::Result<String> {
     let fb2: FictionBook = match from_reader(reader) {
         Ok(f) => f,
-        Err(e) => return Ok(String::from(format!("{{\"error\": \"{}\"}}", e.to_string())))
+        Err(e) => return Err(
+            serde_json::Error::custom(format!("{{\"error\": \"{}\"}}", e.to_string()))
+        )
     };
 
     serde_json::to_string(&fb2)
@@ -185,8 +188,9 @@ async fn process(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
             Ok(Response::new(Body::from(
                 match reader_to_json(reader.into_underlying_reader()) {
                     Ok(r) => r,
-                    Err(_) => {
+                    Err(e) => {
                         let mut server_error = Response::default();
+                        *server_error.body_mut() = Body::from(e.to_string());
                         *server_error.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                         return Ok(server_error)
                     }
@@ -235,7 +239,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let addr = ([127, 0, 0, 1], 3000).into();
 
-        let server = Server::bind(&addr).serve(make_svc);
+        let server = Server::bind(&addr)
+            .serve(make_svc);
 
         println!("Listening on http://{}", addr);
 
