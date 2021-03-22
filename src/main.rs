@@ -9,8 +9,9 @@ use std::process::exit;
 use std::io::{BufRead, BufReader, Cursor};
 use std::convert::Infallible;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Request, Response, Server, Body, Method, StatusCode};
+use hyper::{Request, Response, Server, Body, Method, StatusCode, HeaderMap};
 use serde::de::Error;
+use hyper::header::{CONTENT_TYPE, HeaderValue};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 struct Section {
@@ -185,17 +186,30 @@ async fn process(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
             let reader = Reader::from_reader(
                 BufReader::new(Cursor::new(full_body.to_vec()))
             );
-            Ok(Response::new(Body::from(
+
+            let mut headers = HeaderMap::new();
+
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+            let mut ok = Response::default();
+
+            *ok.body_mut() = Body::from(
                 match reader_to_json(reader.into_underlying_reader()) {
                     Ok(r) => r,
                     Err(e) => {
                         let mut server_error = Response::default();
                         *server_error.body_mut() = Body::from(e.to_string());
+                        *server_error.headers_mut() = headers;
                         *server_error.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                         return Ok(server_error)
                     }
                 }
-            )))
+            );
+
+            *ok.headers_mut() = headers;
+            *ok.status_mut() = StatusCode::OK;
+
+            Ok(ok)
         },
         _ => {
             let mut not_found = Response::default();
