@@ -238,7 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let path = &args[2];
         let reader = match Reader::from_file(path) {
             Ok(f) => f,
-            Err(e) => panic!(e.to_string()),
+            Err(e) => panic!("{}", e.to_string()),
         };
 
         println!("{}", reader_to_json(reader.into_underlying_reader())?);
